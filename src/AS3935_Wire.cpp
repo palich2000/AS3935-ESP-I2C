@@ -1,6 +1,24 @@
 #include <Wire.h>
 #include <AS3935.h>
 
+unsigned long AS3935::last_interrupt_time;
+volatile uint8_t AS3935::_interruptWaiting;
+/**
+ * The ISR for interrupts sent by the detector. Simply sets a flag for the
+ * main service loop to detect when it's ready.
+ */
+
+static void _handleInterrupt(void)
+{
+    AS3935::last_interrupt_time = millis();
+    AS3935::_interruptWaiting = true;
+}
+
+unsigned long AS3935::timeFromLastInterrupt()
+{
+    return  millis() - AS3935::last_interrupt_time;
+}
+
 /*
  * a line-by-line port of https://github.com/pcfens/particle-as3935/
  * an exercise for me to write a library.
@@ -43,7 +61,10 @@ void AS3935::begin(int sda, int scl)
 {
     Wire.begin(sda, scl);
     pinMode(_interruptPin, INPUT);
+    //pinMode(_interruptPin,INPUT_PULLUP);
     disableOscillators();
+    attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
+    _interruptWaiting = digitalRead(_interruptPin);
 }
 
 /**
@@ -51,7 +72,7 @@ void AS3935::begin(int sda, int scl)
  * @param mask The mask to find the shift of
  * @return The number of bit positions to shift the mask
  */
-uint8_t AS3935::_getShift(uint8_t mask)
+uint8_t AS3935::getShift(uint8_t mask)
 {
     uint8_t i = 0;
     for (i = 0; ~mask & 1; i++)
@@ -86,7 +107,7 @@ uint8_t AS3935::readRegisterWithMask(uint8_t reg, uint8_t mask)
 {
     uint8_t v;
     v = readRegister(reg) & mask;
-    return (v >> _getShift(mask));
+    return (v >> AS3935::getShift(mask));
 }
 
 /**
@@ -100,7 +121,7 @@ void AS3935::writeRegisterWithMask(uint8_t reg, uint8_t mask, uint8_t value)
     uint8_t registerValue;
     registerValue = readRegister(reg);
     registerValue &= ~(mask);
-    registerValue |= ((value << (_getShift(mask))) & mask);
+    registerValue |= ((value << (AS3935::getShift(mask))) & mask);
     Wire.beginTransmission(_address);
     Wire.write(reg);
     Wire.write(registerValue);
@@ -148,6 +169,17 @@ void AS3935::disableOscillators(void)
 uint8_t AS3935::getIntrruptReason(void)
 {
     return readRegisterWithMask(0x03, 0b00001111);
+}
+
+uint8_t AS3935::getMaskDisturber(void)
+{
+    return readRegisterWithMask(0x03, 0b00100000);
+}
+
+bool AS3935::setMaskDisturber(bool enable)
+{	
+    writeRegisterWithMask(0x03, 0b00100000, enable);
+    return readRegisterWithMask(0x03, 0b00100000) == enable;
 }
 
 /**
@@ -223,7 +255,7 @@ int8_t AS3935::getDistance(void)
  */
 bool AS3935::isIndoor()
 {
-    return readRegisterWithMask(0x00, 0b11000001) == AS3935_AFE_INDOOR;
+    return readRegisterWithMask(0x00, 0b00111110) == AS3935_AFE_INDOOR;
 }
 
 /**
@@ -232,7 +264,7 @@ bool AS3935::isIndoor()
  */
 bool AS3935::setIndoor()
 {
-    writeRegisterWithMask(0x00, 0b11000001, AS3935_AFE_INDOOR);
+    writeRegisterWithMask(0x00, 0b00111110, AS3935_AFE_INDOOR);
     return isIndoor();
 }
 
@@ -252,7 +284,7 @@ bool AS3935::setIndoor(bool enable)
  */
 bool AS3935::isOutdoor()
 {
-    return readRegisterWithMask(0x00, 0b11000001) == AS3935_AFE_OUTDOOR;
+    return readRegisterWithMask(0x00, 0b00111110) == AS3935_AFE_OUTDOOR;
 }
 
 /**
@@ -261,7 +293,7 @@ bool AS3935::isOutdoor()
  */
 bool AS3935::setOutdoor()
 {
-    writeRegisterWithMask(0x00, 0b11000001, AS3935_AFE_OUTDOOR);
+    writeRegisterWithMask(0x00, 0b00111110, AS3935_AFE_OUTDOOR);
     return isOutdoor();
 }
 
@@ -282,7 +314,7 @@ bool AS3935::setOutdoor(bool enable)
  */
 uint8_t AS3935::getMinimumLightning(void)
 {
-    switch(readRegisterWithMask(0x02, 0b11001111)) {
+    switch(readRegisterWithMask(AS3935_MIN_NUM_LIGH)) {
         case 0:
             return 1;
             break;
@@ -309,8 +341,25 @@ uint8_t AS3935::getMinimumLightning(void)
 bool AS3935::setMinimumLightning(uint8_t n)
 {
     if (n == 1 || n == 5 || n == 9 || n == 16) {
-        writeRegisterWithMask(0x02, 0b11001111, n);
-        return getMinimumLightning();
+	uint8_t tmp;
+	switch(n) {
+	    case 1:
+		tmp = 0;
+                break;
+	    case 5:
+		tmp = 1;
+                break;
+	    case 9:
+		tmp = 2;
+                break;
+	    case 16:
+		tmp = 3;
+                break;
+	    default:
+		return false;
+	}
+        writeRegisterWithMask(AS3935_MIN_NUM_LIGH, tmp);
+        return getMinimumLightning() == n;
     }
     return false;
 }
@@ -321,11 +370,11 @@ bool AS3935::setMinimumLightning(uint8_t n)
  */
 void AS3935::clearStats(void)
 {
-    writeRegisterWithMask(0x02, 0b10111111, 1);
+    writeRegisterWithMask(AS3935_CL_STAT, 1);
     delay(2);
-    writeRegisterWithMask(0x02, 0b10111111, 0);
+    writeRegisterWithMask(AS3935_CL_STAT, 0);
     delay(2);
-    writeRegisterWithMask(0x02, 0b10111111, 1);
+    writeRegisterWithMask(AS3935_CL_STAT, 1);
     delay(2);
 }
 
@@ -385,15 +434,15 @@ uint8_t AS3935::setTuningCapacitor(uint8_t cap)
 {
     if (cap <= 15 || cap >= 0) {
         noInterrupts();
-        writeRegisterWithMask(0x08, 0b00001111, cap);
+        writeRegisterWithMask(AS3935_TUN_CAP, cap);
         delay(2);
         calibrateRCO();
-        writeRegisterWithMask(0x08, 0b00100000, 1);
+        writeRegisterWithMask(AS3935_DISP_TRCO, 1);
         delay(2);
-        writeRegisterWithMask(0x08, 0b00100000, 0);
+        writeRegisterWithMask(AS3935_DISP_TRCO, 0);
         interrupts();
     }
-    return readRegisterWithMask(0x08, 0b00001111);
+    return readRegisterWithMask(AS3935_TUN_CAP);
 }
 /**
  * Compatibility
@@ -403,4 +452,102 @@ uint8_t AS3935::setTuningCapacitor(uint8_t cap)
 void AS3935::calibrate(uint8_t cap)
 {
     setTuningCapacitor(cap);
+}
+
+
+/**
+ * Get the value of the interrupt register on the AS3935
+ * @return A number representing the cause of the interrupt.
+ */
+uint8_t AS3935::getInterrupt(void)
+{
+  _interruptWaiting = false;
+  delay(3);
+  uint8_t reg = getIntrruptReason();
+  return reg;
+}
+
+
+/**
+ * Determine if an interrupt is waiting to be handled by the normal program
+ * loop
+ * @return Boolean true if an interrupt occured and needs to be dealt with,
+ * false otherwise.
+ */
+
+bool AS3935::waitingInterrupt()
+{
+  return _interruptWaiting;
+}
+
+void AS3935::emulateInterrupt(void)
+{
+    _interruptWaiting = true;
+}
+
+uint32_t AS3935::getStrikeEnergyRaw(void)
+{
+    uint32_t nrgy_raw = readRegisterWithMask(0x06, 0x1F) ;		// MMSB, shift 8  bits left, make room for MSB
+    nrgy_raw <<= 8;
+
+    nrgy_raw |= readRegisterWithMask(0x05, 0xFF);			// read MSB
+    nrgy_raw <<= 8;							// shift 8 bits left, make room for LSB
+
+    nrgy_raw |= readRegisterWithMask(0x04, 0xFF);			// read LSB, add to others
+    
+    return nrgy_raw;
+}
+
+uint8_t AS3935::getWatchdogThreshold(void)
+{
+    // This function is used to read WDTH. It is used to increase robustness to disturbers,
+    // though will make detection less efficient (see page 19, Fig 20 of datasheet)
+    // WDTH register: add 0x01, bits 3:0
+    // default value of 0001
+    // values should only be between 0x00 and 0x0F (0 and 7)
+    uint8_t reg = readRegisterWithMask(0x01, 0x0F);
+    return reg;
+}
+
+bool AS3935::setWatchdogThreshold(int level)
+{
+    if (level < 0 || level > 0x0F)
+        return false;
+    writeRegisterWithMask(0x01, 0x0F, level);
+    return getWatchdogThreshold() == level;
+}
+
+uint8_t AS3935::getSpikeRejection(void)
+{
+    // This function is used to read SREJ (spike rejection). Similar to the Watchdog threshold,
+    // it is used to make the system more robust to disturbers, though will make general detection
+    // less efficient (see page 20-21, especially Fig 21 of datasheet)
+    // SREJ register: add 0x02, bits 3:0
+    // default value of 0010
+    // values should only be between 0x00 and 0x0F (0 and 7)
+    uint8_t reg = readRegisterWithMask(0x02, 0x0F);
+    return reg;
+}
+
+bool AS3935::setSpikeRejection(int level)
+{
+    if (level < 0 || level > 0x0F)
+        return false;
+    writeRegisterWithMask(0x02, 0x0F, level);
+    return getSpikeRejection() == level;
+}
+
+void AS3935::powerDown()
+{
+    writeRegisterWithMask(AS3935_PWD, 1);
+}
+
+void AS3935::powerUp()
+{
+    writeRegisterWithMask(AS3935_PWD, 0);
+    calibrateRCO();
+    delay(3);
+    writeRegisterWithMask(AS3935_DISP_TRCO, 1);
+    delay(2);
+    writeRegisterWithMask(AS3935_DISP_TRCO, 0);
 }
