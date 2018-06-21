@@ -1,8 +1,9 @@
 #include <Wire.h>
 #include <AS3935.h>
+#include <limits.h>
 
 unsigned long AS3935::last_interrupt_time;
-volatile uint8_t AS3935::_interruptWaiting;
+volatile int AS3935::_interruptWaiting;
 /**
  * The ISR for interrupts sent by the detector. Simply sets a flag for the
  * main service loop to detect when it's ready.
@@ -11,7 +12,7 @@ volatile uint8_t AS3935::_interruptWaiting;
 static void _handleInterrupt(void)
 {
     AS3935::last_interrupt_time = millis();
-    AS3935::_interruptWaiting = true;
+    AS3935::_interruptWaiting++;
 }
 
 unsigned long AS3935::timeFromLastInterrupt()
@@ -47,6 +48,19 @@ void AS3935::begin()
     begin((int) _defaultSDA, (int) _defaultSCL);
 }
 
+void AS3935::interruptEnable(bool enable)
+{
+    if (enable) {
+	attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
+	_interruptWaiting = 0;
+	digitalRead(_interruptPin);
+    } else {
+	detachInterrupt(digitalPinToInterrupt(_interruptPin));
+	_interruptWaiting = 0;
+	digitalRead(_interruptPin);
+    }
+}
+
 /**
  * Begin using the object
  *
@@ -61,10 +75,8 @@ void AS3935::begin(int sda, int scl)
 {
     Wire.begin(sda, scl);
     pinMode(_interruptPin, INPUT);
-    //pinMode(_interruptPin,INPUT_PULLUP);
     disableOscillators();
-    attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
-    _interruptWaiting = digitalRead(_interruptPin);
+    //interruptEnable(true);
 }
 
 /**
@@ -87,10 +99,11 @@ uint8_t AS3935::getShift(uint8_t mask)
  */
 uint8_t AS3935::readRegister(uint8_t reg)
 {
+    transmit_error = 0;
     uint8_t v;
     Wire.beginTransmission(_address);
     Wire.write(reg);
-    Wire.endTransmission(false);
+    transmit_error = Wire.endTransmission(false);
     Wire.requestFrom((int)_address, 1);
     v = Wire.read();
     return v;
@@ -110,6 +123,11 @@ uint8_t AS3935::readRegisterWithMask(uint8_t reg, uint8_t mask)
     return (v >> AS3935::getShift(mask));
 }
 
+uint8_t AS3935::transmitError()
+{
+    return transmit_error;
+}
+
 /**
  * Write a masked value to register reg, preserving other bits
  * @param reg The register address
@@ -118,6 +136,7 @@ uint8_t AS3935::readRegisterWithMask(uint8_t reg, uint8_t mask)
  */
 void AS3935::writeRegisterWithMask(uint8_t reg, uint8_t mask, uint8_t value)
 {
+    transmit_error = 0;
     uint8_t registerValue;
     registerValue = readRegister(reg);
     registerValue &= ~(mask);
@@ -125,7 +144,7 @@ void AS3935::writeRegisterWithMask(uint8_t reg, uint8_t mask, uint8_t value)
     Wire.beginTransmission(_address);
     Wire.write(reg);
     Wire.write(registerValue);
-    Wire.endTransmission();
+    transmit_error = Wire.endTransmission();
 }
 
 /**
@@ -152,6 +171,10 @@ void AS3935::setDefault(void)
 void AS3935::calibrateRCO(void)
 {
     writeRegister(0x3D, 0x96);
+    delay(10);
+    writeRegisterWithMask(AS3935_DISP_TRCO, 1);
+    delay(2);
+    writeRegisterWithMask(AS3935_DISP_TRCO, 0);
 }
 
 /**
@@ -168,18 +191,18 @@ void AS3935::disableOscillators(void)
  */
 uint8_t AS3935::getIntrruptReason(void)
 {
-    return readRegisterWithMask(0x03, 0b00001111);
+    return readRegisterWithMask(AS3935_INT);
 }
 
 uint8_t AS3935::getMaskDisturber(void)
 {
-    return readRegisterWithMask(0x03, 0b00100000);
+    return readRegisterWithMask(AS3935_MASK_DIST);
 }
 
 bool AS3935::setMaskDisturber(bool enable)
 {	
-    writeRegisterWithMask(0x03, 0b00100000, enable);
-    return readRegisterWithMask(0x03, 0b00100000) == enable;
+    writeRegisterWithMask(AS3935_MASK_DIST, enable);
+    return readRegisterWithMask(AS3935_MASK_DIST) == enable;
 }
 
 /**
@@ -192,7 +215,7 @@ int8_t AS3935::getDistance(void)
 {
     uint8_t v;
     int8_t d;
-    v = readRegisterWithMask(0x07, 0b00111111);
+    v = readRegisterWithMask(AS3935_DISTANCE);
     switch(v) {
         case 0b111111:
             d = AS3935_DISTANCE_OUT_OF_RANGE;
@@ -255,7 +278,7 @@ int8_t AS3935::getDistance(void)
  */
 bool AS3935::isIndoor()
 {
-    return readRegisterWithMask(0x00, 0b00111110) == AS3935_AFE_INDOOR;
+    return readRegisterWithMask(AS3935_AFE_GB) == AS3935_AFE_INDOOR;
 }
 
 /**
@@ -264,7 +287,7 @@ bool AS3935::isIndoor()
  */
 bool AS3935::setIndoor()
 {
-    writeRegisterWithMask(0x00, 0b00111110, AS3935_AFE_INDOOR);
+    writeRegisterWithMask(AS3935_AFE_GB, AS3935_AFE_INDOOR);
     return isIndoor();
 }
 
@@ -284,7 +307,7 @@ bool AS3935::setIndoor(bool enable)
  */
 bool AS3935::isOutdoor()
 {
-    return readRegisterWithMask(0x00, 0b00111110) == AS3935_AFE_OUTDOOR;
+    return readRegisterWithMask(AS3935_AFE_GB) == AS3935_AFE_OUTDOOR;
 }
 
 /**
@@ -293,7 +316,7 @@ bool AS3935::isOutdoor()
  */
 bool AS3935::setOutdoor()
 {
-    writeRegisterWithMask(0x00, 0b00111110, AS3935_AFE_OUTDOOR);
+    writeRegisterWithMask(AS3935_AFE_GB, AS3935_AFE_OUTDOOR);
     return isOutdoor();
 }
 
@@ -370,12 +393,14 @@ bool AS3935::setMinimumLightning(uint8_t n)
  */
 void AS3935::clearStats(void)
 {
+    noInterrupts();
     writeRegisterWithMask(AS3935_CL_STAT, 1);
     delay(2);
     writeRegisterWithMask(AS3935_CL_STAT, 0);
     delay(2);
     writeRegisterWithMask(AS3935_CL_STAT, 1);
     delay(2);
+    interrupts();
 }
 
 /**
@@ -384,7 +409,7 @@ void AS3935::clearStats(void)
  */
 uint8_t AS3935::getNoiseFloor(void)
 {
-    return readRegisterWithMask(0x01, 0b01110000);
+    return readRegisterWithMask(AS3935_NF_LEV);
 }
 
 /**
@@ -396,7 +421,7 @@ bool AS3935::setNoiseFloor(int level)
 {
     if (level < 0 || level > 7)
         return false;
-    writeRegisterWithMask(0x01, 0b01110000, level);
+    writeRegisterWithMask(AS3935_NF_LEV, level);
     return getNoiseFloor() == level;
 }
 
@@ -433,27 +458,12 @@ uint8_t AS3935::descreseNoiseFloor(void)
 uint8_t AS3935::setTuningCapacitor(uint8_t cap)
 {
     if (cap <= 15 || cap >= 0) {
-        noInterrupts();
         writeRegisterWithMask(AS3935_TUN_CAP, cap);
-        delay(2);
+        delay(10);
         calibrateRCO();
-        writeRegisterWithMask(AS3935_DISP_TRCO, 1);
-        delay(2);
-        writeRegisterWithMask(AS3935_DISP_TRCO, 0);
-        interrupts();
     }
     return readRegisterWithMask(AS3935_TUN_CAP);
 }
-/**
- * Compatibility
- * @param cap Integer, from 0 to 15.
- * @sa AS3935::setTuningCapacitor(uint8_t)
- */
-void AS3935::calibrate(uint8_t cap)
-{
-    setTuningCapacitor(cap);
-}
-
 
 /**
  * Get the value of the interrupt register on the AS3935
@@ -461,8 +471,7 @@ void AS3935::calibrate(uint8_t cap)
  */
 uint8_t AS3935::getInterrupt(void)
 {
-  _interruptWaiting = false;
-  delay(3);
+  _interruptWaiting = 0;
   uint8_t reg = getIntrruptReason();
   return reg;
 }
@@ -477,23 +486,28 @@ uint8_t AS3935::getInterrupt(void)
 
 bool AS3935::waitingInterrupt()
 {
+  return _interruptWaiting != 0;
+}
+
+int AS3935::getInterruptCount()
+{
   return _interruptWaiting;
 }
 
 void AS3935::emulateInterrupt(void)
 {
-    _interruptWaiting = true;
+    _interruptWaiting = 1;
 }
 
 uint32_t AS3935::getStrikeEnergyRaw(void)
 {
-    uint32_t nrgy_raw = readRegisterWithMask(0x06, 0x1F) ;		// MMSB, shift 8  bits left, make room for MSB
+    uint32_t nrgy_raw = readRegisterWithMask(AS3935_ENERGY_3) ;		// MMSB, shift 8  bits left, make room for MSB
     nrgy_raw <<= 8;
 
-    nrgy_raw |= readRegisterWithMask(0x05, 0xFF);			// read MSB
+    nrgy_raw |= readRegisterWithMask(AS3935_ENERGY_2);			// read MSB
     nrgy_raw <<= 8;							// shift 8 bits left, make room for LSB
 
-    nrgy_raw |= readRegisterWithMask(0x04, 0xFF);			// read LSB, add to others
+    nrgy_raw |= readRegisterWithMask(AS3935_ENERGY_1);			// read LSB, add to others
     
     return nrgy_raw;
 }
@@ -505,7 +519,7 @@ uint8_t AS3935::getWatchdogThreshold(void)
     // WDTH register: add 0x01, bits 3:0
     // default value of 0001
     // values should only be between 0x00 and 0x0F (0 and 7)
-    uint8_t reg = readRegisterWithMask(0x01, 0x0F);
+    uint8_t reg = readRegisterWithMask(AS3935_WDTH);
     return reg;
 }
 
@@ -513,7 +527,7 @@ bool AS3935::setWatchdogThreshold(int level)
 {
     if (level < 0 || level > 0x0F)
         return false;
-    writeRegisterWithMask(0x01, 0x0F, level);
+    writeRegisterWithMask(AS3935_WDTH, level);
     return getWatchdogThreshold() == level;
 }
 
@@ -525,7 +539,7 @@ uint8_t AS3935::getSpikeRejection(void)
     // SREJ register: add 0x02, bits 3:0
     // default value of 0010
     // values should only be between 0x00 and 0x0F (0 and 7)
-    uint8_t reg = readRegisterWithMask(0x02, 0x0F);
+    uint8_t reg = readRegisterWithMask(AS3935_SREJ);
     return reg;
 }
 
@@ -533,7 +547,7 @@ bool AS3935::setSpikeRejection(int level)
 {
     if (level < 0 || level > 0x0F)
         return false;
-    writeRegisterWithMask(0x02, 0x0F, level);
+    writeRegisterWithMask(AS3935_SREJ, level);
     return getSpikeRejection() == level;
 }
 
@@ -546,8 +560,221 @@ void AS3935::powerUp()
 {
     writeRegisterWithMask(AS3935_PWD, 0);
     calibrateRCO();
-    delay(3);
-    writeRegisterWithMask(AS3935_DISP_TRCO, 1);
+}
+
+uint8_t AS3935::bitTest(void) {
+  uint8_t           retval;
+  noInterrupts();
+  attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
+
+  _interruptWaiting = 0;
+  pinMode(_interruptPin, OUTPUT);
+
+  interrupts();
+  digitalWrite(_interruptPin, LOW);
+  delay(1);
+  digitalWrite(_interruptPin, HIGH);
+  delay(1);
+  digitalWrite(_interruptPin, LOW);
+
+  delay(50);
+
+  noInterrupts();
+
+  if (_interruptWaiting > 0) {
+    getInterrupt();
+  }
+  retval = _interruptWaiting;
+  _interruptWaiting = 0;
+
+  pinMode(_interruptPin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
+  return retval;
+}
+
+uint8_t AS3935::getFreqDivRatio(void) {
+    return readRegisterWithMask(AS3935_LCO_FDIV);
+}
+
+bool AS3935::setFreqDivRatio(uint8_t div_ratio) {
+    writeRegisterWithMask(AS3935_LCO_FDIV, div_ratio);
+    return getFreqDivRatio() == div_ratio;
+}
+
+bool AS3935::displayLCOFreqOnIrq(uint8_t on)
+{
+    writeRegisterWithMask(AS3935_LCO_FDIV, on);
+    return readRegisterWithMask(AS3935_LCO_FDIV) == on;
+}
+
+
+int AS3935::irqTest(void) {
+
+    int cnt;
+    pinMode(_interruptPin, OUTPUT);
+    if (!setFreqDivRatio(AS3935_LCO_DIV_16)) 
+	return -1;
+
+    if (!displayLCOFreqOnIrq(1))
+	return -2;
+
+    noInterrupts();
+
+    _interruptWaiting = 0;
+
+    interrupts();
+
+    delay(1000);
+
+    noInterrupts();
+
+    cnt = _interruptWaiting;
+
+    interrupts();
+
+    if (!displayLCOFreqOnIrq(0))
+	return -3;
+
+    return cnt;
+}
+
+int AS3935::tuneAntenna(uint8_t tuneCapacitor) {
+    unsigned long setUpTime;
+    int currentcount = 0;
+    int currIrq, prevIrq;
+    writeRegisterWithMask(AS3935_LCO_FDIV,0);
+    writeRegisterWithMask(AS3935_DISP_LCO,1);
+
+    writeRegisterWithMask(AS3935_TUN_CAP,tuneCapacitor);
+    delay(10);
+    prevIrq = digitalRead(_interruptPin);
+    setUpTime = millis() + 100;
+
+    while((long)(millis() - setUpTime) < 0) {
+	currIrq = digitalRead(_interruptPin);
+	if (currIrq > prevIrq) {
+	    currentcount++;
+	}
+	prevIrq = currIrq;
+    }
+
+    writeRegisterWithMask(AS3935_TUN_CAP,tuneCapacitor);
     delay(2);
-    writeRegisterWithMask(AS3935_DISP_TRCO, 0);
+    writeRegisterWithMask(AS3935_DISP_LCO,0);
+    // and now do RCO calibration
+    powerUp();
+
+    return currentcount;
+}
+
+bool AS3935::calibrate(uint8_t &tuneCapacitor)
+{
+    int target = 3125, currentcount = 0, bestdiff = INT_MAX, currdiff = 0;
+    byte bestTune = 0, currTune = 0;
+    unsigned long setUpTime;
+    int currIrq, prevIrq;
+
+    interruptEnable(false);
+    // set lco_fdiv divider to 0, which translates to 16
+    // so we are looking for 31250Hz on irq pin
+    // and since we are counting for 100ms that translates to number 3125
+    // each capacitor changes second least significant digit
+    // using this timing so this is probably the best way to go
+    writeRegisterWithMask(AS3935_LCO_FDIV,0);
+    writeRegisterWithMask(AS3935_DISP_LCO,1);
+    // tuning is not linear, can't do any shortcuts here
+    // going over all built-in cap values and finding the best
+    for (currTune = 0; currTune <= 0x0F; currTune++) 
+    {
+	writeRegisterWithMask(AS3935_TUN_CAP,currTune);
+	// let it settle
+	delay(10);
+	currentcount = 0;
+	prevIrq = digitalRead(_interruptPin);
+	setUpTime = millis() + 100;
+	while((long)(millis() - setUpTime) < 0)
+	{
+	    currIrq = digitalRead(_interruptPin);
+	    if (currIrq > prevIrq)
+	    {
+		currentcount++;	
+	    }
+	    prevIrq = currIrq;
+	}
+	currdiff = target - currentcount;
+	// don't look at me, abs() misbehaves
+	if(currdiff < 0)
+	    currdiff = -currdiff;
+	if(bestdiff > currdiff)
+	{
+	    bestdiff = currdiff;
+	    bestTune = currTune;
+	}
+    }
+    tuneCapacitor = bestTune;
+    writeRegisterWithMask(AS3935_TUN_CAP,bestTune);
+    delay(2);
+    writeRegisterWithMask(AS3935_DISP_LCO,0);
+    // and now do RCO calibration
+    powerUp();
+    // if error is over 109, we are outside allowed tuning range of +/-3.5%
+    interruptEnable(true);
+    return bestdiff > 109?false:true;
+}
+
+int AS3935::getBestTune(long int &freq)
+{
+    int target = 3125, currentcount = 0, bestdiff = INT_MAX, currdiff = 0, best_count = 0;
+    byte bestTune = 0, currTune = 0;
+    unsigned long setUpTime;
+    int currIrq, prevIrq;
+
+    interruptEnable(false);
+    // set lco_fdiv divider to 0, which translates to 16
+    // so we are looking for 31250Hz on irq pin (square wave)
+    // and since we are counting for 100ms that translates to number 3125
+    // each capacitor changes second least significant digit
+    // using this timing so this is probably the best way to go
+    writeRegisterWithMask(AS3935_LCO_FDIV,0);
+    writeRegisterWithMask(AS3935_DISP_LCO,1);
+    // tuning is not linear, can't do any shortcuts here
+    // going over all built-in cap values and finding the best
+    for (currTune = 0; currTune <= 0x0F; currTune++) 
+    {
+	writeRegisterWithMask(AS3935_TUN_CAP,currTune);
+	// let it settle
+	delay(10);
+	currentcount = 0;
+	prevIrq = digitalRead(_interruptPin);
+	setUpTime = millis() + 100;
+	while((long)(millis() - setUpTime) < 0)
+	{
+	    currIrq = digitalRead(_interruptPin);
+	    if (currIrq > prevIrq)
+	    {
+		currentcount++;	
+	    }
+	    prevIrq = currIrq;
+	}
+	currdiff = target - currentcount;
+	// don't look at me, abs() misbehaves
+	if(currdiff < 0)
+	    currdiff = -currdiff;
+	if(bestdiff > currdiff)
+	{
+	    bestdiff = currdiff;
+	    bestTune = currTune;
+	    best_count = currentcount;
+	}
+    }
+
+    freq = best_count * 160;
+    writeRegisterWithMask(AS3935_TUN_CAP,bestTune);
+    delay(2);
+    writeRegisterWithMask(AS3935_DISP_LCO,0);
+    // and now do RCO calibration
+    powerUp();
+    // if error is over 109, we are outside allowed tuning range of +/-3.5%
+    interruptEnable(true);
+    return bestTune;
 }

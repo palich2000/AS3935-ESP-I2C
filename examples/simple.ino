@@ -13,7 +13,7 @@
 #include "support.h"
 #include "settings.h"
 
-AS3935 as3935(0x03, D8);
+AS3935 as3935(0x03, D5);
 
 const char* update_path = "/WebFirmwareUpgrade";
 const char* update_username = "admin";
@@ -122,6 +122,8 @@ void setup_web_server() {
 	}
 	result += "}";
 	RtcSettingsSave();
+	outputCalibrationValues();
+	recalibrate();
 	web_server.send (200, "text/json", result);
     });
     
@@ -132,6 +134,7 @@ void setup_web_server() {
 	    uint8_t reg = as3935.readRegister(i);
 	    tmp_s += "reg[" + String(i) + "]:0x" + String(reg, HEX) + " 0b" + String(reg, BIN) + " ";
         }
+	dumpRegs(0x00, 0x09);
 	web_server.send (200, "text/json", "{\"regs\": \"" + tmp_s  + "\"}");
     });
 
@@ -185,6 +188,50 @@ void setup_web_server() {
     MDNS.addService("http", "tcp", 80);
 }
 
+void outputCalibrationValues() {
+  as3935.interruptEnable(false);
+  delay(50);
+  for (byte i = 0; i <= 0x0F; i++) {
+    int frequency = as3935.tuneAntenna(i);
+    long fullFreq = (long) frequency*160;  // multiply with clock-divider, and 10 (because measurement is for 100ms)
+    SYSLOG(LOG_INFO,"tune antenna to capacitor %d gives frequency: %d = %ld Hz", i, frequency, fullFreq);
+    delay(10);
+  }
+  as3935.interruptEnable(true);
+}
+
+void recalibrate() {
+  delay(50);
+  long int freq;
+  uint8_t cap = as3935.getBestTune(freq); 
+  SYSLOG(LOG_INFO, "antenna calibration picks value: %d freq: %ld Hz", cap, freq);
+  delay(50);
+}
+
+void as3935_init() {
+
+    as3935.begin(D2, D1);
+    as3935.setDefault();
+    //SYSLOG(LOG_INFO,"AS3935 Capacitor: %d", as3935.setTuningCapacitor(12));
+
+    outputCalibrationValues();
+    recalibrate();
+
+    SYSLOG(LOG_INFO,"AS3935 NoiseFloor: %d set: %s", RtcSettings.NoiseFloor, as3935.setNoiseFloor(RtcSettings.NoiseFloor)==true?"OK":"FAIL");
+    SYSLOG(LOG_INFO,"AS3935 SpikeRejection: %d set: %s", RtcSettings.SpikeRejection, as3935.setSpikeRejection(RtcSettings.SpikeRejection)==true?"OK":"FAIL");
+    SYSLOG(LOG_INFO,"AS3935 WatchdogThreshold: %d set: %s", RtcSettings.WatchdogThreshold, as3935.setWatchdogThreshold(RtcSettings.WatchdogThreshold)==true?"OK":"FAIL");
+    SYSLOG(LOG_INFO,"AS3935 MinimumLightning: %d set: %s", RtcSettings.MinimumLightning, as3935.setMinimumLightning(RtcSettings.MinimumLightning)==true?"OK":"FAIL");
+  
+    outputCalibrationValues();
+    recalibrate();
+
+    as3935.setIndoor();
+    as3935.setMaskDisturber(1);
+    dumpRegs(0x00, 0x09);
+
+    as3935.interruptEnable(true);
+}
+
 void
 setup()
 {
@@ -228,31 +275,12 @@ setup()
 	SYSLOG(LOG_INFO, "Flash Chip Mode: %d", ESP.getFlashChipMode());
 
 
-	Wire.begin(D2, D1);
-	char buf[255] = {};
-	I2cScan(buf,sizeof(buf)-1);
-	Serial.println("=================");
-	Serial.println(buf);
-	Serial.println("=================");
-
 	RtcInit();
 
-	as3935.begin(D2, D1);
-	as3935.setDefault();
-	as3935.setIndoor();
-
-	SYSLOG(LOG_INFO,"AS3935 NoiseFloor: %d set: %s", RtcSettings.NoiseFloor, as3935.setNoiseFloor(RtcSettings.NoiseFloor)==true?"OK":"FAIL");
-	SYSLOG(LOG_INFO,"AS3935 SpikeRejection: %d set: %s", RtcSettings.SpikeRejection, as3935.setSpikeRejection(RtcSettings.SpikeRejection)==true?"OK":"FAIL");
-	SYSLOG(LOG_INFO,"AS3935 WatchdogThreshold: %d set: %s", RtcSettings.WatchdogThreshold, as3935.setWatchdogThreshold(RtcSettings.WatchdogThreshold)==true?"OK":"FAIL");
-	SYSLOG(LOG_INFO,"AS3935 MinimumLightning: %d set: %s", RtcSettings.MinimumLightning, as3935.setMinimumLightning(RtcSettings.MinimumLightning)==true?"OK":"FAIL");
-	SYSLOG(LOG_INFO,"AS3935 Capacitor: %d", as3935.setTuningCapacitor(12));
-
-	as3935.setMaskDisturber(true);
 
 	MQTT_Reconnect();
 	MQTT_send_state();
 
-	as3935.begin(D2, D1);
 
 	digitalWrite(BUILTIN_LED, HIGH);
 	SYSLOG(LOG_INFO, "=======End setup======");
@@ -340,15 +368,12 @@ every_second(void)
     static bool not_cleared_stat = true;
     if ((not_cleared_stat) && (utc_time > 0)) {
 	not_cleared_stat = false;
-	as3935.clearStats();
-	SYSLOG(LOG_INFO, "as3935::clearStats");
+	as3935_init();
     }
 }
 
 #define LightningHistoryLen 60
 uint8_t LightningHistory[LightningHistoryLen]={};
-
-//tele/wemos4/SENSOR = {"Time":"2018-06-16T06:25:02","SHT3X":{"Temperature":25.8,"Humidity":61.9}
 
 void
 MQTT_send_sensor(void)
@@ -388,10 +413,53 @@ main_loop(void)
     }
 }
 
+uint8_t dumpRegs(uint8_t s, uint8_t n) {
+  uint8_t  i;
+  uint8_t  reg;
+  uint8_t  err = 0;
+  uint8_t  r;
+
+  for (i=0; i<n; i++) {
+    r = i + s;
+    reg = as3935.readRegister(r);
+    if ((err = as3935.transmitError()) != 0) {
+      SYSLOG(LOG_ERR, "readRegister 0x%02x read error %d", r, err);
+      break;
+    }
+    REG_u rr;
+    rr.data = reg;
+
+    switch(r) {
+	case 0:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] PWD: 0x%02x AFE_GB:0x%02x", r, rr.R0.PWD,  rr.R0.AFE_GB);
+	    break;
+	case 1:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] WDTH:0x%02x NF_LEV:0x%02x", r, rr.R1.WDTH,  rr.R1.NF_LEV);
+	    break;
+	case 2:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] SREJ:0x%02x MIN_NUM_LIGHT:0x%02x CL_STAT:0x%02x", r, rr.R2.SREJ,  rr.R2.MIN_NUM_LIGHT, rr.R2.CL_STAT);
+	    break;
+	case 3:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] INT: 0x%02x MASK_DIST:0x%02x LCO_FDIV:0x%02x", r, rr.R3.INT,  rr.R3.MASK_DIST, rr.R3.LCO_FDIV);
+	    break;
+	case 7:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] DISTANCE:0x%02x", r, rr.R7.DISTANCE);
+	    break;
+	case 8:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] TUN_CAP:0x%02x DISP_TRCO:0x%02x DISP_SRCO:0x%02x DISP_LCO:0x%02x", r, rr.R8.TUN_CAP,  rr.R8.DISP_TRCO, rr.R8.DISP_SRCO, rr.R8.DISP_LCO);
+	    break;
+	default:
+	    SYSLOG(LOG_INFO, "Reg[0x%02x] 0x%02x", r, reg);
+    }
+    delay(25);
+  }
+  return(err);
+}
 
 void
 loop()
 {
+	main_loop();
 	if (as3935.waitingInterrupt()) {
             delay(2);
             unsigned long time = as3935.timeFromLastInterrupt();
@@ -420,6 +488,5 @@ loop()
 	    OsWatchLoop();
 	    web_server.handleClient();
 	    MqttClient.loop();
-	    main_loop();
 	}
 }

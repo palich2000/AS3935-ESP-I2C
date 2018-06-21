@@ -1,0 +1,1 @@
+/home/palich/src2/AS3935-ESP-I2C/examples/simple.ino
