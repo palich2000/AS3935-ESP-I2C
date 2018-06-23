@@ -133,6 +133,7 @@ void setup_web_server() {
         for (i = 0; i <= 0x08; i++) {
 	    uint8_t reg = as3935.readRegister(i);
 	    tmp_s += "reg[" + String(i) + "]:0x" + String(reg, HEX) + " 0b" + String(reg, BIN) + " ";
+	    delay(25);
         }
 	dumpRegs(0x00, 0x09);
 	web_server.send (200, "text/json", "{\"regs\": \"" + tmp_s  + "\"}");
@@ -212,7 +213,8 @@ void as3935_init() {
 
     as3935.begin(D2, D1);
     as3935.setDefault();
-    //SYSLOG(LOG_INFO,"AS3935 Capacitor: %d", as3935.setTuningCapacitor(12));
+    as3935.setOutdoor();
+    as3935.setMaskDisturber(0);
 
     outputCalibrationValues();
     recalibrate();
@@ -225,8 +227,6 @@ void as3935_init() {
     outputCalibrationValues();
     recalibrate();
 
-    as3935.setIndoor();
-    as3935.setMaskDisturber(1);
     dumpRegs(0x00, 0x09);
 
     as3935.interruptEnable(true);
@@ -277,10 +277,8 @@ setup()
 
 	RtcInit();
 
-
 	MQTT_Reconnect();
 	MQTT_send_state();
-
 
 	digitalWrite(BUILTIN_LED, HIGH);
 	SYSLOG(LOG_INFO, "=======End setup======");
@@ -327,14 +325,6 @@ ping_sever(const char * server) {
   }
 }
 
-void 
-display_regs(){
-    uint8_t reg = as3935.readRegister(0x00);
-    SYSLOG(LOG_INFO, "reg[0x00]");
-    SYSLOG(LOG_INFO, "AFE Gain Boost: %d", reg & 0b00000001);
-    SYSLOG(LOG_INFO, "Power-down: %d", reg & 0b00111110 >> 1)
-}
-
 const char * mqtt_host = "192.168.0.106";
 int mqtt_port = 8883;
 const char * mqtt_client = my_hostname;
@@ -372,23 +362,33 @@ every_second(void)
     }
 }
 
+typedef struct {
+    int l_count;
+    int d_count;
+    long energy;
+} LightningHistory_t;
+
 #define LightningHistoryLen 60
-uint8_t LightningHistory[LightningHistoryLen]={};
+LightningHistory_t LightningHistory[LightningHistoryLen] = {};
 
 void
 MQTT_send_sensor(void)
 {
-    int strikes = 0,strikes_dist = 0;
+    int strikes = 0;
+    int disturbs = 0;
+    long energy = 0;
     for (int i = 0; i < LightningHistoryLen; i++) {
-	if (LightningHistory[i]) {
-	    strikes++;
-	    strikes_dist += LightningHistory[i];
-	}
+	strikes += LightningHistory[i].l_count;
+	energy  += LightningHistory[i].energy;
+	disturbs += LightningHistory[i].d_count;
+    }
+    if (strikes) {
+	energy = energy / strikes;
     }
     char buffer[255] = {};
     char voltage[16];
     dtostrfd((double)ESP.getVcc() / 1000, 3, voltage);
-    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"AS3935\":{\"Strikes\": %d,\"Strikes_dist\": %d}}"), GetDateAndTime().c_str(), strikes, strikes_dist);
+    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"AS3935\":{\"Strikes\": %d,\"Energy\": %ld,\"Disturbes\": %d}}"), GetDateAndTime().c_str(), strikes, energy, disturbs);
     String topic = String("tele/") + my_hostname + String("/SENSOR");
     MQTT_publish(topic.c_str(),buffer);
 }
@@ -397,6 +397,7 @@ void
 every_minute(void)
 {
     MQTT_send_sensor();
+    LOGSERIAL(false);
 }
 
 void 
@@ -405,7 +406,7 @@ main_loop(void)
     static uint32_t last_utc_time = 0;
     if (last_utc_time != utc_time) {
 	last_utc_time = utc_time;
-	LightningHistory[utc_time % LightningHistoryLen] = 0;
+	LightningHistory[utc_time % LightningHistoryLen] = {};
 	every_second();
 	if (utc_time % 60 == 0){
 	    every_minute();
@@ -464,27 +465,31 @@ loop()
             delay(2);
             unsigned long time = as3935.timeFromLastInterrupt();
 	    uint8_t int_src = as3935.getInterrupt();
-	    int dist = as3935.getDistance();
-            uint32_t energy = as3935.getStrikeEnergyRaw();
-	    if(0 == int_src) {
-    		SYSLOG(LOG_INFO, "interrupt source result not expected");
-	    } else {
-		if(AS3935_INT_STRIKE & int_src) {
-		    LightningHistory[utc_time % LightningHistoryLen] += 41 - dist;
-		    SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld",
-			dist, energy, time);
-		}
-		if(AS3935_INT_DISTURBER & int_src) {
-		    static int dd_count = 0;
-		    dd_count ++;
-		    SYSLOG(LOG_INFO, "Disturber detected: %d", dd_count);
-		}
-		if(AS3935_INT_NOISE & int_src)  {
-		    SYSLOG(LOG_INFO, "Noise level too high");
+	    if (as3935.transmitError() == 0) {
+		int dist = as3935.getDistance();
+        	uint32_t energy = as3935.getStrikeEnergyRaw();
+		if (0 == int_src) {
+    		    SYSLOG(LOG_INFO, "interrupt source result not expected");
+		} else {
+		    if(AS3935_INT_STRIKE & int_src) {
+			int i = utc_time % LightningHistoryLen;
+			LightningHistory[i].l_count++;
+			LightningHistory[i].energy += energy;
+			SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld", dist, energy, time);
+		    }
+		    if(AS3935_INT_DISTURBER & int_src) {
+			int i = utc_time % LightningHistoryLen;
+			LightningHistory[i].d_count++;
+			SYSLOG(LOG_INFO, "Disturber detected: %d", LightningHistory[i].d_count);
+		    }
+		    if(AS3935_INT_NOISE & int_src)  {
+			SYSLOG(LOG_INFO, "Noise level too high");
+		    }
 		}
 	    }
 	}
-	else {
+	//else 
+	{
 	    OsWatchLoop();
 	    web_server.handleClient();
 	    MqttClient.loop();

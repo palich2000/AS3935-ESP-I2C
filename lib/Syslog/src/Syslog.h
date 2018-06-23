@@ -98,6 +98,10 @@ private:
     bool _sendLog(uint16_t pri, const char *message);
     bool _sendLog(uint16_t pri, const __FlashStringHelper *message);
     GetStrDateAndTime_t GetStrDateAndTime;
+
+private:
+    bool _logSerial = true;
+
 public:
     Syslog(UDP &client, uint8_t protocol = SYSLOG_PROTO_IETF);
     Syslog(UDP &client, const char* server, uint16_t port, const char* deviceHostname = SYSLOG_NILVALUE, const char* appName = SYSLOG_NILVALUE, uint16_t priDefault = LOG_KERN, uint8_t protocol = SYSLOG_PROTO_IETF);
@@ -130,6 +134,8 @@ public:
     bool log(const __FlashStringHelper *message);
     bool log(const String &message);
     bool log(const char *message);
+
+    void logSerial(bool enable);
 };
 extern Syslog * syslog;
 #endif

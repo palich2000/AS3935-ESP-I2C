@@ -220,8 +220,9 @@ inline bool Syslog::_sendLog(uint16_t pri, const char *message) {
     if (GetStrDateAndTime) {
         strtime = GetStrDateAndTime();
     }
-    Serial.printf("%s %s %s: %s \n", strtime.c_str(), this->_deviceHostname, this->_appName, message);
-    //yield();
+    if (_logSerial) {
+	Serial.printf("%s %s %s: %s \n", strtime.c_str(), this->_deviceHostname, this->_appName, message);
+    }
     return true;
 }
 
@@ -258,8 +259,14 @@ inline bool Syslog::_sendLog(uint16_t pri, const __FlashStringHelper *message) {
     if (GetStrDateAndTime) {
         strtime = GetStrDateAndTime();
     }
-    Serial.printf("%s %s %s: %s \n", strtime.c_str(), this->_deviceHostname, this->_appName, (const char*)message);
-    //yield();
+
+    if (_logSerial) {
+	Serial.printf("%s %s %s: %s \n", strtime.c_str(), this->_deviceHostname, this->_appName, (const char*)message);
+    }
 
     return true;
+}
+
+void Syslog::logSerial(bool enable) {
+    _logSerial = enable;
 }

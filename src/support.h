@@ -11,4 +11,10 @@ extern Syslog * syslog;
     } \
 }
 
+#define LOGSERIAL(enable)  \
+{ \
+if (syslog) { \
+syslog->logSerial(enable); \
+} \
+}
 #endif

@@ -44,9 +44,9 @@ void RtcSettingsLoad() {
     ESP.rtcUserMemoryRead(100, (uint32_t*)&RtcSettings, sizeof(RtcSettings));
     if (RtcSettings.valid != RTC_MEM_VALID) {
         memset(&RtcSettings, 0, sizeof(RtcSettings));
-	RtcSettings.NoiseFloor = 2;
-	RtcSettings.WatchdogThreshold = 0; //2;
-        RtcSettings.SpikeRejection = 0; //2;
+	RtcSettings.NoiseFloor = 3;
+	RtcSettings.WatchdogThreshold = 1; //2;
+        RtcSettings.SpikeRejection = 2; //2;
 	RtcSettings.MinimumLightning = 1;
         RtcSettings.valid = RTC_MEM_VALID;
         RtcSettingsSave();

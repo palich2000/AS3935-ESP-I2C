@@ -52,13 +52,11 @@ void AS3935::interruptEnable(bool enable)
 {
     if (enable) {
 	attachInterrupt(digitalPinToInterrupt(_interruptPin), &_handleInterrupt, RISING);
-	_interruptWaiting = 0;
-	digitalRead(_interruptPin);
     } else {
 	detachInterrupt(digitalPinToInterrupt(_interruptPin));
-	_interruptWaiting = 0;
-	digitalRead(_interruptPin);
     }
+    _interruptWaiting = 0;
+    digitalRead(_interruptPin);
 }
 
 /**
@@ -519,8 +517,7 @@ uint8_t AS3935::getWatchdogThreshold(void)
     // WDTH register: add 0x01, bits 3:0
     // default value of 0001
     // values should only be between 0x00 and 0x0F (0 and 7)
-    uint8_t reg = readRegisterWithMask(AS3935_WDTH);
-    return reg;
+    return readRegisterWithMask(AS3935_WDTH);
 }
 
 bool AS3935::setWatchdogThreshold(int level)
@@ -539,8 +536,7 @@ uint8_t AS3935::getSpikeRejection(void)
     // SREJ register: add 0x02, bits 3:0
     // default value of 0010
     // values should only be between 0x00 and 0x0F (0 and 7)
-    uint8_t reg = readRegisterWithMask(AS3935_SREJ);
-    return reg;
+    return readRegisterWithMask(AS3935_SREJ);
 }
 
 bool AS3935::setSpikeRejection(int level)
