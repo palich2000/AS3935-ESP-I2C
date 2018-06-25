@@ -13,6 +13,10 @@
 #include "support.h"
 #include "settings.h"
 
+#define NO_STRIKE_DISTANCE 40
+int distanceToLastStrike = NO_STRIKE_DISTANCE;
+uint32_t utcTimeOfLastStrike = 0;
+
 AS3935 as3935(0x03, D5);
 
 const char* update_path = "/WebFirmwareUpgrade";
@@ -388,7 +392,8 @@ MQTT_send_sensor(void)
     char buffer[255] = {};
     char voltage[16];
     dtostrfd((double)ESP.getVcc() / 1000, 3, voltage);
-    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"AS3935\":{\"Strikes\": %d,\"Energy\": %ld,\"Disturbes\": %d}}"), GetDateAndTime().c_str(), strikes, energy, disturbs);
+    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"AS3935\":{\"Strikes\": %d,\"Energy\": %ld,\"Disturbes\": %d,\"Distance\": %d}}"),
+		GetDateAndTime().c_str(), strikes, energy, disturbs, distanceToLastStrike);
     String topic = String("tele/") + my_hostname + String("/SENSOR");
     MQTT_publish(topic.c_str(),buffer);
 }
@@ -398,6 +403,9 @@ every_minute(void)
 {
     MQTT_send_sensor();
     LOGSERIAL(false);
+    if (GetUTCTime() - utcTimeOfLastStrike >= 15 * 60) {
+	distanceToLastStrike =  NO_STRIKE_DISTANCE;
+    }
 }
 
 void 
@@ -457,6 +465,7 @@ uint8_t dumpRegs(uint8_t s, uint8_t n) {
   return(err);
 }
 
+
 void
 loop()
 {
@@ -475,6 +484,8 @@ loop()
 			int i = utc_time % LightningHistoryLen;
 			LightningHistory[i].l_count++;
 			LightningHistory[i].energy += energy;
+			distanceToLastStrike = dist;
+			utcTimeOfLastStrike = GetUTCTime();
 			SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld", dist, energy, time);
 		    }
 		    if(AS3935_INT_DISTURBER & int_src) {

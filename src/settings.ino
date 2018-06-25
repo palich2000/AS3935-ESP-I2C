@@ -45,7 +45,7 @@ void RtcSettingsLoad() {
     if (RtcSettings.valid != RTC_MEM_VALID) {
         memset(&RtcSettings, 0, sizeof(RtcSettings));
 	RtcSettings.NoiseFloor = 4;
-	RtcSettings.WatchdogThreshold = 1; //2;
+	RtcSettings.WatchdogThreshold = 2; //2;
         RtcSettings.SpikeRejection = 2; //2;
 	RtcSettings.MinimumLightning = 1;
         RtcSettings.valid = RTC_MEM_VALID;
