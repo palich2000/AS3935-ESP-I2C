@@ -20,6 +20,9 @@ void SyslogInit() {
         syslog->SetGetStrDateAndTime(GetUtcDateAndTime);
     }
 }
+void SysLogFlush() {
+    udpClient.flush();
+}
 
 Ticker tickerOSWatch;
 static unsigned long oswatch_last_loop_time;

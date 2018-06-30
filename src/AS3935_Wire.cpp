@@ -72,9 +72,9 @@ void AS3935::interruptEnable(bool enable)
 void AS3935::begin(int sda, int scl)
 {
     Wire.begin(sda, scl);
+    Wire.setClock(100000);
     pinMode(_interruptPin, INPUT);
     disableOscillators();
-    //interruptEnable(true);
 }
 
 /**

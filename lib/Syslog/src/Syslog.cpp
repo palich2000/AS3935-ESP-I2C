@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <Arduino.h>
-
+#include <ESP8266WiFi.h>
 #include "Syslog.h"
 
 // Public Methods //////////////////////////////////////////////////////////////
@@ -202,24 +202,30 @@ inline bool Syslog::_sendLog(uint16_t pri, const char *message) {
     if ((pri & LOG_FACMASK) == 0)
         pri = LOG_MAKEPRI(LOG_FAC(this->_priDefault), pri);
 
-    if (this->_server != NULL) {
-        result = this->_client->beginPacket(this->_server, this->_port);
-    } else {
-        result = this->_client->beginPacket(this->_ip, this->_port);
-    }
+    if (WL_CONNECTED == WiFi.status()) {
+	if (this->_server != NULL) {
+    	    result = this->_client->beginPacket(this->_server, this->_port);
+	} else {
+    	    result = this->_client->beginPacket(this->_ip, this->_port);
+	}
 
-    if (result != 1)
-        return false;
+	if (result != 1)
+    	    return false;
+    }
 
     snprintf_P(syslog_preamble, sizeof(syslog_preamble), PSTR("%s %s "), this->_deviceHostname, this->_appName);
 
-    this->_client->print(syslog_preamble);
-    this->_client->print(message);
-    this->_client->endPacket();
+    if (WL_CONNECTED == WiFi.status()) {
+	this->_client->print(syslog_preamble);
+	this->_client->print(message);
+	this->_client->endPacket();
+    }
+
     String strtime = "";
     if (GetStrDateAndTime) {
         strtime = GetStrDateAndTime();
     }
+
     if (_logSerial) {
 	Serial.printf("%s %s %s: %s \n", strtime.c_str(), this->_deviceHostname, this->_appName, message);
     }
@@ -240,20 +246,25 @@ inline bool Syslog::_sendLog(uint16_t pri, const __FlashStringHelper *message) {
     if ((pri & LOG_FACMASK) == 0)
         pri = LOG_MAKEPRI(LOG_FAC(this->_priDefault), pri);
 
-    if (this->_server != NULL) {
-        result = this->_client->beginPacket(this->_server, this->_port);
-    } else {
-        result = this->_client->beginPacket(this->_ip, this->_port);
-    }
+    if (WL_CONNECTED == WiFi.status()) {
+
+	if (this->_server != NULL) {
+    	    result = this->_client->beginPacket(this->_server, this->_port);
+	} else {
+    	    result = this->_client->beginPacket(this->_ip, this->_port);
+	}
 
     if (result != 1)
         return false;
+    }
 
     snprintf_P(syslog_preamble, sizeof(syslog_preamble), PSTR("%s %s"), this->_deviceHostname, this->_appName);
 
-    this->_client->print(syslog_preamble);
-    this->_client->print(message);
-    this->_client->endPacket();
+    if (WL_CONNECTED == WiFi.status()) {
+	this->_client->print(syslog_preamble);
+	this->_client->print(message);
+	this->_client->endPacket();
+    }
 
     String strtime = "";
     if (GetStrDateAndTime) {

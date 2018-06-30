@@ -44,7 +44,7 @@ void RtcSettingsLoad() {
     ESP.rtcUserMemoryRead(100, (uint32_t*)&RtcSettings, sizeof(RtcSettings));
     if (RtcSettings.valid != RTC_MEM_VALID) {
         memset(&RtcSettings, 0, sizeof(RtcSettings));
-	RtcSettings.NoiseFloor = 4;
+	RtcSettings.NoiseFloor = 2;
 	RtcSettings.WatchdogThreshold = 2; //2;
         RtcSettings.SpikeRejection = 2; //2;
 	RtcSettings.MinimumLightning = 1;
@@ -203,6 +203,8 @@ wifiStatusJson(void)
 bool
 MQTT_publish(const char * topic, const char * message)
 {
+    if (!MqttClient.connected()) return -1;
+
     bool ret = MqttClient.publish(topic, message);
     if (!ret) {
 	SYSLOG(LOG_ERR, "Unable publish to mqtt server. Reason:%d", MqttClient.state());
@@ -226,10 +228,19 @@ MQTT_send_state(void)
     MQTT_publish(topic.c_str(),buffer);
 }
 
+void ntpSyncTime() {
+    ntp_time = sntp_get_current_timestamp();
+    if (ntp_time) {
+      TIME_T tmpTime;
+      utc_time = ntp_time;
+      BreakTime(utc_time, tmpTime);
+      RtcTime.year = tmpTime.year + 1970;
+    }
+}
+
 void RtcSecond() {
 
   byte ntpsync = 0;
-  TIME_T tmpTime;
 
   if (RtcTime.year < 2016) {
     if (WL_CONNECTED == WiFi.status()) {
@@ -242,12 +253,7 @@ void RtcSecond() {
   }
 
   if (ntpsync) {
-    ntp_time = sntp_get_current_timestamp();
-    if (ntp_time) {
-      utc_time = ntp_time;
-      BreakTime(utc_time, tmpTime);
-      RtcTime.year = tmpTime.year + 1970;
-    }
+    ntpSyncTime();
   }
 
     utc_time++;

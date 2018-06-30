@@ -66,6 +66,22 @@ void setup_web_server() {
 	"}");
     });
 
+    web_server.on("/power", HTTP_POST, [&]() {
+	String pwr = web_server.arg("pwr");
+	if (pwr == "on") {
+	    as3935.powerUp();
+	}
+	else if (pwr == "off") {
+	    as3935.powerDown();
+	}
+	else {
+	    web_server.send (200, "text/json","error");
+	    return;
+	}
+	dumpRegs(0x00, 0x09);
+	web_server.send (200, "text/json","OK");
+    });
+
     web_server.on("/set", HTTP_POST, [&]() {
         int iNoiseFloor = 0;
         int iWatchdogThreshold = 0;
@@ -128,22 +144,24 @@ void setup_web_server() {
 	RtcSettingsSave();
 	outputCalibrationValues();
 	recalibrate();
+	dumpRegs(0x00, 0x09);
 	web_server.send (200, "text/json", result);
     });
     
     web_server.on("/regs", HTTP_POST, [&]() {
-        uint8_t i;
-	String tmp_s;
-        for (i = 0; i <= 0x08; i++) {
+	String tmp_s("OK");
+	/*
+        for (uint8_t i = 0; i <= 0x08; i++) {
 	    uint8_t reg = as3935.readRegister(i);
 	    tmp_s += "reg[" + String(i) + "]:0x" + String(reg, HEX) + " 0b" + String(reg, BIN) + " ";
-	    delay(25);
         }
+	*/
 	dumpRegs(0x00, 0x09);
 	web_server.send (200, "text/json", "{\"regs\": \"" + tmp_s  + "\"}");
     });
 
     web_server.on("/reset", HTTP_POST, [&]() {
+	as3935.powerDown();
 	SYSLOG(LOG_INFO, "reset");
 	web_server.send (200, "text/json", "OK");
 	web_server.close();
@@ -161,6 +179,7 @@ void setup_web_server() {
     web_server.on("/clear_stats", HTTP_POST, [&]() {
 	SYSLOG(LOG_INFO, "clearStats");
 	as3935.clearStats();
+	distanceToLastStrike = NO_STRIKE_DISTANCE;
 	web_server.send (200, "text/json", "OK");
     });
 
@@ -215,10 +234,12 @@ void recalibrate() {
 
 void as3935_init() {
 
+    WiFi.forceSleepBegin();
+
     as3935.begin(D2, D1);
     as3935.setDefault();
     as3935.setOutdoor();
-    as3935.setMaskDisturber(0);
+    as3935.setMaskDisturber(1);
 
     outputCalibrationValues();
     recalibrate();
@@ -231,9 +252,14 @@ void as3935_init() {
     outputCalibrationValues();
     recalibrate();
 
+    as3935.clearStats();
+
     dumpRegs(0x00, 0x09);
 
+    distanceToLastStrike = NO_STRIKE_DISTANCE;
+
     as3935.interruptEnable(true);
+    //WiFi.forceSleepWake();
 }
 
 void
@@ -335,36 +361,30 @@ const char * mqtt_client = my_hostname;
 const char * mqtt_user = "owntracks";
 const char * mqtt_pwd = "zhopa";
 
-void 
+bool
 MQTT_Reconnect(void)
 {
+    if (WL_CONNECTED != WiFi.status()) return false;
+
     static uint32_t next_try_connect_time = 0;
 
-    if (MqttClient.connected()) return;
+    if (MqttClient.connected()) return true;
 
-    if (utc_time < next_try_connect_time) return;
+    if (GetUTCTime() < next_try_connect_time) return false;
 
-    next_try_connect_time = utc_time + 10;
+    next_try_connect_time = GetUTCTime() + 10;
 
     MqttClient.setServer(mqtt_host, mqtt_port);
 
     if (MqttClient.connect(mqtt_client, mqtt_user, mqtt_pwd)) {
 	SYSLOG(LOG_INFO, "mqtt server %s:%d connected",mqtt_host, mqtt_port)
+	return true;
     } else {
 	SYSLOG(LOG_ERR, "Unable connect to mqtt server %s:%d rc %d",mqtt_host, mqtt_port, MqttClient.state());
-  }
+    }
+    return false;
 }
 
-void 
-every_second(void)
-{
-    MQTT_Reconnect();
-    static bool not_cleared_stat = true;
-    if ((not_cleared_stat) && (utc_time > 0)) {
-	not_cleared_stat = false;
-	as3935_init();
-    }
-}
 
 typedef struct {
     int l_count;
@@ -374,6 +394,34 @@ typedef struct {
 
 #define LightningHistoryLen 60
 LightningHistory_t LightningHistory[LightningHistoryLen] = {};
+
+
+void
+wifiOn() {
+    as3935.powerDown();
+    WiFi.forceSleepWake();
+
+    uint32_t startTime = GetUTCTime();;
+
+    while ((WL_CONNECTED != WiFi.status()) && (GetUTCTime() - startTime < 10)) {
+	delay(100);
+    }
+
+    if (GetUTCTime() - startTime >= 10) {
+	SYSLOG(LOG_ERR, "WiFi not connected");
+    }
+}
+
+void
+wifiOff() {
+    SysLogFlush();
+    EspClient.flush();
+    MqttClient.disconnect();
+    WiFi.forceSleepBegin();
+    delay(100);
+    as3935.powerUp();
+}
+
 
 void
 MQTT_send_sensor(void)
@@ -395,16 +443,48 @@ MQTT_send_sensor(void)
     snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"AS3935\":{\"Strikes\": %d,\"Energy\": %ld,\"Disturbes\": %d,\"Distance\": %d}}"),
 		GetDateAndTime().c_str(), strikes, energy, disturbs, distanceToLastStrike);
     String topic = String("tele/") + my_hostname + String("/SENSOR");
-    MQTT_publish(topic.c_str(),buffer);
+
+    if (MQTT_Reconnect()) {
+	MQTT_publish(topic.c_str(),buffer);
+    } else {
+	SYSLOG(LOG_ERR, "MQTT not connected");
+    }
 }
+
+void 
+every_hour(void)
+{
+    ntpSyncTime();
+    MQTT_send_state();
+    dumpRegs(0x00, 0x09);
+}
+
 
 void 
 every_minute(void)
 {
-    MQTT_send_sensor();
-    LOGSERIAL(false);
+    auto now = GetUTCTime();
+
     if (GetUTCTime() - utcTimeOfLastStrike >= 15 * 60) {
 	distanceToLastStrike =  NO_STRIKE_DISTANCE;
+    }
+
+    wifiOn();
+    MQTT_send_sensor();
+    if (now % 3600 == 0){
+        every_hour();
+    }
+    wifiOff();
+}
+
+void
+every_second(void)
+{
+    MQTT_Reconnect();
+    static bool not_cleared_stat = true;
+    if ((not_cleared_stat) && (utc_time > 0)) {
+	not_cleared_stat = false;
+	as3935_init();
     }
 }
 
@@ -413,10 +493,10 @@ main_loop(void)
 {
     static uint32_t last_utc_time = 0;
     if (last_utc_time != utc_time) {
-	last_utc_time = utc_time;
-	LightningHistory[utc_time % LightningHistoryLen] = {};
+	auto now = last_utc_time = GetUTCTime();
+	LightningHistory[now % LightningHistoryLen] = {};
 	every_second();
-	if (utc_time % 60 == 0){
+	if (now % 60 == 0){
 	    every_minute();
 	}
     }
@@ -460,7 +540,7 @@ uint8_t dumpRegs(uint8_t s, uint8_t n) {
 	default:
 	    SYSLOG(LOG_INFO, "Reg[0x%02x] 0x%02x", r, reg);
     }
-    delay(25);
+    delay(5);
   }
   return(err);
 }
@@ -471,7 +551,7 @@ loop()
 {
 	main_loop();
 	if (as3935.waitingInterrupt()) {
-            delay(2);
+            delay(3);
             unsigned long time = as3935.timeFromLastInterrupt();
 	    uint8_t int_src = as3935.getInterrupt();
 	    if (as3935.transmitError() == 0) {
@@ -499,10 +579,7 @@ loop()
 		}
 	    }
 	}
-	//else 
-	{
-	    OsWatchLoop();
-	    web_server.handleClient();
-	    MqttClient.loop();
-	}
+	OsWatchLoop();
+        web_server.handleClient();
+        MqttClient.loop();
 }
