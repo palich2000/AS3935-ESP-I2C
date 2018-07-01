@@ -417,15 +417,29 @@ wifiOff() {
     SysLogFlush();
     EspClient.flush();
     MqttClient.disconnect();
-    WiFi.forceSleepBegin();
+    auto now = GetUTCTime();
+    int c = 0;
+    while ((WIFI_OFF != WiFi.getMode()) && (GetUTCTime() - now < 3)) {
+	if (WiFi.forceSleepBegin()) break;
+	delay(100);
+	c++;
+    }
+    SYSLOG(LOG_ERR, "WiFi mode is: %d status: %d c: %d", WiFi.getMode(), WiFi.status(), c);
     delay(100);
     as3935.powerUp();
 }
 
+bool
+MQTT_need_send_sensor(void) {
+    int strikes = 0;
+    for (int i = 0; i < LightningHistoryLen; i++) {
+	strikes += LightningHistory[i].l_count;
+    }
+    return strikes > 0;
+}
 
 void
-MQTT_send_sensor(void)
-{
+MQTT_send_sensor(void) {
     int strikes = 0;
     int disturbs = 0;
     long energy = 0;
@@ -433,6 +447,7 @@ MQTT_send_sensor(void)
 	strikes += LightningHistory[i].l_count;
 	energy  += LightningHistory[i].energy;
 	disturbs += LightningHistory[i].d_count;
+	LightningHistory[i] = {};
     }
     if (strikes) {
 	energy = energy / strikes;
@@ -468,13 +483,14 @@ every_minute(void)
     if (GetUTCTime() - utcTimeOfLastStrike >= 15 * 60) {
 	distanceToLastStrike =  NO_STRIKE_DISTANCE;
     }
-
-    wifiOn();
-    MQTT_send_sensor();
-    if (now % 3600 == 0){
-        every_hour();
+    if (MQTT_need_send_sensor() || (now % 3600 == 0) || (now % 600 == 0)) {
+	wifiOn();
+	MQTT_send_sensor();
+	if (now % 3600 == 0){
+	    every_hour();
+	}
+	wifiOff();
     }
-    wifiOff();
 }
 
 void
@@ -494,7 +510,6 @@ main_loop(void)
     static uint32_t last_utc_time = 0;
     if (last_utc_time != utc_time) {
 	auto now = last_utc_time = GetUTCTime();
-	LightningHistory[now % LightningHistoryLen] = {};
 	every_second();
 	if (now % 60 == 0){
 	    every_minute();
