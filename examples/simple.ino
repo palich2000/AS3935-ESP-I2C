@@ -13,6 +13,7 @@
 #include "support.h"
 #include "settings.h"
 
+#define BUZZER_PIN D6
 #define NO_STRIKE_DISTANCE 40
 int distanceToLastStrike = NO_STRIKE_DISTANCE;
 uint32_t utcTimeOfLastStrike = 0;
@@ -263,14 +264,57 @@ void as3935_init() {
 }
 
 void
+buzz_on(int freq, int volume) {
+    if (RtcTime.hour > 6) {
+	analogWriteRange(freq);
+	analogWrite(BUZZER_PIN, volume);
+    }
+    digitalWrite(LED_BUILTIN, LOW);
+}
+
+void
+buzz_off() {
+    analogWrite(BUZZER_PIN, 0);
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_BUILTIN, HIGH);
+}
+
+static unsigned long BuzerStopTime = 0;
+
+void
+BuzerBackGroundBeep(int freq, int duration_millis, int volume) {
+    BuzerStopTime =  millis() + duration_millis;
+    buzz_on(freq, volume);
+}
+
+void
+BuzerLoop() {
+    if (BuzerStopTime) {
+	if (BuzerStopTime < millis()) {
+	    buzz_off();
+	    BuzerStopTime = 0;
+	}
+    }
+}
+
+void
 setup()
 {
-	pinMode(BUILTIN_LED, OUTPUT);
-	digitalWrite(BUILTIN_LED, LOW);
+	pinMode(LED_BUILTIN, OUTPUT);
+	digitalWrite(LED_BUILTIN, LOW);
+
+	pinMode(BUZZER_PIN, OUTPUT);
+	digitalWrite(BUZZER_PIN, LOW);
+
+
+
 	Serial.begin(115200);
 	Serial.println();
 	Serial.println(__FILE__);
 	Serial.println("+");
+
+	buzz_on(1000, 10);
 
 	SettingsLoad();
 	SyslogInit();
@@ -310,8 +354,10 @@ setup()
 	MQTT_Reconnect();
 	MQTT_send_state();
 
-	digitalWrite(BUILTIN_LED, HIGH);
+	digitalWrite(LED_BUILTIN, HIGH);
+	buzz_off();
 	SYSLOG(LOG_INFO, "=======End setup======");
+
 }
 
 void I2cScan(char *devs, unsigned int devs_len)
@@ -581,6 +627,8 @@ loop()
 			LightningHistory[i].energy += energy;
 			distanceToLastStrike = dist;
 			utcTimeOfLastStrike = GetUTCTime();
+			int vol = 2 * (40 - dist);
+			BuzerBackGroundBeep(1500,500,vol);
 			SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld", dist, energy, time);
 		    }
 		    if(AS3935_INT_DISTURBER & int_src) {
@@ -597,4 +645,5 @@ loop()
 	OsWatchLoop();
         web_server.handleClient();
         MqttClient.loop();
+	BuzerLoop();
 }
