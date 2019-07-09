@@ -3,15 +3,15 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
-#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
 #include <ESP8266mDNS.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266httpUpdate.h>
-#include <ESP8266HTTPUpdateServer.h>
 #include <ESP8266Ping.h>
 #include <PubSubClient.h>                   // MQTT
 #include "support.h"
 #include "settings.h"
+#include <Ticker.h>
+Ticker ticker;
 
 #define BUZZER_PIN D6
 #define NO_STRIKE_DISTANCE 40
@@ -20,22 +20,17 @@ uint32_t utcTimeOfLastStrike = 0;
 
 AS3935 as3935(0x03, D5);
 
-const char* update_path = "/WebFirmwareUpgrade";
-const char* update_username = "admin";
-const char* update_password = "espP@ssw0rd";
-
 const char* ssid = "indebuurt1";
 const char* password = "VnsqrtnrsddbrN";
 char my_hostname[33] = {};
 
-WiFiManager wifiManager;
-
 ESP8266WebServer web_server(80);
-ESP8266HTTPUpdateServer httpUpdater;
 
-WiFiClient EspClient;
-PubSubClient MqttClient(EspClient);
+WiFiClient TcpClientMqtt;
+WiFiClient TcpClientHttpUpdate;
+PubSubClient MqttClient(TcpClientMqtt);
 
+bool update_inprogress = false;
 
 void setup_web_server() {
 
@@ -186,9 +181,10 @@ void setup_web_server() {
 
     web_server.on("/esp", HTTP_POST, [&]() {
         String firmware = web_server.arg("firmware");
+	update_inprogress = true;
         web_server.close();
         SYSLOG(LOG_INFO, "Begin update firmwate: %s", firmware.c_str());
-        HTTPUpdateResult ret = ESPhttpUpdate.update(firmware, "1.0.0");
+        HTTPUpdateResult ret = ESPhttpUpdate.update(TcpClientHttpUpdate, firmware, "1.0.0");
         web_server.begin();
         switch(ret) {
         case HTTP_UPDATE_FAILED:
@@ -208,7 +204,6 @@ void setup_web_server() {
         }
     });
 
-    httpUpdater.setup(&web_server, update_path, update_username, update_password);
     web_server.begin();
     MDNS.addService("http", "tcp", 80);
 }
@@ -234,9 +229,14 @@ void recalibrate() {
 }
 
 void as3935_init() {
-
-    WiFi.forceSleepBegin();
-
+    ticker.detach();
+    digitalWrite(LED_BUILTIN, HIGH);
+    _WiFiOff();
+    int c = 0;
+    while (WIFI_OFF != WiFi.getMode()) {
+	delay(100);
+	c++;
+    }
     as3935.begin(D2, D1);
     as3935.setDefault();
     as3935.setOutdoor();
@@ -260,7 +260,7 @@ void as3935_init() {
     distanceToLastStrike = NO_STRIKE_DISTANCE;
 
     as3935.interruptEnable(true);
-    //WiFi.forceSleepWake();
+
 }
 
 void
@@ -298,11 +298,18 @@ BuzerLoop() {
     }
 }
 
+void 
+tick() {
+  int state = digitalRead(LED_BUILTIN);
+  digitalWrite(LED_BUILTIN, !state);
+}
+
+
 void
-setup()
-{
+setup() {
 	pinMode(LED_BUILTIN, OUTPUT);
 	digitalWrite(LED_BUILTIN, LOW);
+	ticker.attach(0.6, tick);
 
 	pinMode(BUZZER_PIN, OUTPUT);
 	digitalWrite(BUZZER_PIN, LOW);
@@ -319,16 +326,21 @@ setup()
 	SettingsLoad();
 	SyslogInit();
 	
-	wifiManager.setConfigPortalTimeout(180);
-
 	WiFi.hostname(my_hostname);
+	WiFi.persistent(true);
+	WiFi.mode(WIFI_STA);
+	WiFi.setAutoConnect(true);
 	WiFi.begin(ssid, password);
-	if (!wifiManager.autoConnect(ssid, password)) {
-	    Serial.println("failed to connect, we should reset as see if it connects");
-	    delay(3000);
-	    ESP.reset();
-	    delay(5000);	
+
+	Serial.print("Connecting:");
+
+	uint32_t startTime = GetUTCTime();
+	while ((WL_CONNECTED != WiFi.status()) && (GetUTCTime() - startTime < 10)) {
+	    delay(500);
+	    Serial.print(".");
 	}
+	Serial.println("");
+
 	MDNS.begin(my_hostname);
 	ping_sever(WiFi.gatewayIP().toString().c_str());
 	OsWatchInit();
@@ -357,7 +369,7 @@ setup()
 	digitalWrite(LED_BUILTIN, HIGH);
 	buzz_off();
 	SYSLOG(LOG_INFO, "=======End setup======");
-
+	ticker.attach(1.0, tick);
 }
 
 void I2cScan(char *devs, unsigned int devs_len)
@@ -441,19 +453,33 @@ typedef struct {
 #define LightningHistoryLen 60
 LightningHistory_t LightningHistory[LightningHistoryLen] = {};
 
+static void _WiFiOn() {
+    wifi_fpm_do_wakeup();
+    wifi_fpm_close();
+    wifi_set_opmode(STATION_MODE);
+    wifi_station_connect();
+}
+
+static void _WiFiOff() {
+    wifi_station_disconnect();
+    wifi_set_opmode(NULL_MODE);
+    wifi_set_sleep_type(MODEM_SLEEP_T);
+    wifi_fpm_open();
+    wifi_fpm_do_sleep(0xFFFFFFF);
+}
+
 
 void
 wifiOn() {
     as3935.powerDown();
-    WiFi.forceSleepWake();
 
-    uint32_t startTime = GetUTCTime();;
+    _WiFiOn();
 
+    uint32_t startTime = GetUTCTime();
     while ((WL_CONNECTED != WiFi.status()) && (GetUTCTime() - startTime < 10)) {
-	delay(100);
+	delay(500);
     }
-
-    if (GetUTCTime() - startTime >= 10) {
+    if (WL_CONNECTED != WiFi.status()) {
 	SYSLOG(LOG_ERR, "WiFi not connected");
     }
 }
@@ -461,16 +487,17 @@ wifiOn() {
 void
 wifiOff() {
     SysLogFlush();
-    EspClient.flush();
+    TcpClientMqtt.flush();
     MqttClient.disconnect();
+
+    _WiFiOff();
+
     auto now = GetUTCTime();
     int c = 0;
     while ((WIFI_OFF != WiFi.getMode()) && (GetUTCTime() - now < 3)) {
-	if (WiFi.forceSleepBegin()) break;
 	delay(100);
 	c++;
     }
-    SYSLOG(LOG_ERR, "WiFi mode is: %d status: %d c: %d", WiFi.getMode(), WiFi.status(), c);
     delay(100);
     as3935.powerUp();
 }
@@ -529,7 +556,7 @@ every_minute(void)
     if (GetUTCTime() - utcTimeOfLastStrike >= 15 * 60) {
 	distanceToLastStrike =  NO_STRIKE_DISTANCE;
     }
-    if (MQTT_need_send_sensor() || (now % 3600 == 0) || (now % 600 == 0)) {
+    if ((MQTT_need_send_sensor() || (now % 1800 == 0)) && (!update_inprogress)) {
 	wifiOn();
 	MQTT_send_sensor();
 	if (now % 3600 == 0){
@@ -543,15 +570,16 @@ void
 every_second(void)
 {
     MQTT_Reconnect();
-    static bool not_cleared_stat = true;
-    if ((not_cleared_stat) && (utc_time > 0)) {
-	not_cleared_stat = false;
+    static int delay_run_init = 0;
+    
+    if ((delay_run_init == 5)&&(!update_inprogress)) {
 	as3935_init();
     }
+    delay_run_init++;
 }
 
-void 
-main_loop(void) 
+void
+main_loop(void)
 {
     static uint32_t last_utc_time = 0;
     if (last_utc_time != utc_time) {
@@ -627,8 +655,8 @@ loop()
 			LightningHistory[i].energy += energy;
 			distanceToLastStrike = dist;
 			utcTimeOfLastStrike = GetUTCTime();
-			int vol = 2 * (40 - dist);
-			BuzerBackGroundBeep(1500,500,vol);
+			int vol = (40 - dist);
+			BuzerBackGroundBeep(1000, 100, 20);
 			SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld", dist, energy, time);
 		    }
 		    if(AS3935_INT_DISTURBER & int_src) {

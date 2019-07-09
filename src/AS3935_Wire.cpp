@@ -9,7 +9,7 @@ volatile int AS3935::_interruptWaiting;
  * main service loop to detect when it's ready.
  */
 
-static void _handleInterrupt(void)
+static void ICACHE_RAM_ATTR _handleInterrupt(void)
 {
     AS3935::last_interrupt_time = millis();
     AS3935::_interruptWaiting++;
