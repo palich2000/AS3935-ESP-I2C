@@ -222,8 +222,10 @@ MQTT_send_state(void)
 {
     char buffer[255] = {};
     char voltage[16];
+    String ver = String(__DATE__)+String(" ")+String(__TIME__);
     dtostrfd((double)ESP.getVcc() / 1000, 3, voltage);
-    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"Uptime\":%d,\"Vcc\":%s, %s}"), GetDateAndTime().c_str(), uptime, voltage, wifiStatusJson().c_str());
+    snprintf_P(buffer, sizeof(buffer) - 1, PSTR("{\"Time\":\"%s\",\"Ver\":\"%s\",\"Uptime\":%d,\"Vcc\":%s, %s}"), 
+    GetDateAndTime().c_str(), ver.c_str(),  uptime, voltage, wifiStatusJson().c_str());
     String topic = String("tele/") + my_hostname + String("/STATE");
     MQTT_publish(topic.c_str(),buffer);
 }

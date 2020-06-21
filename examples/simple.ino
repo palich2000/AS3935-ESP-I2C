@@ -265,6 +265,7 @@ void as3935_init() {
 
 void
 buzz_on(int freq, int volume) {
+    return; // beep off
     if (RtcTime.hour > 6) {
 	analogWriteRange(freq);
 	analogWrite(BUZZER_PIN, volume);
@@ -655,7 +656,7 @@ loop()
 			LightningHistory[i].energy += energy;
 			distanceToLastStrike = dist;
 			utcTimeOfLastStrike = GetUTCTime();
-			int vol = (40 - dist);
+			//int vol = (40 - dist);
 			BuzerBackGroundBeep(1000, 100, 20);
 			SYSLOG(LOG_INFO, "Lightning detected! Distance to strike: %d kilometers energy: %u time: %ld", dist, energy, time);
 		    }
